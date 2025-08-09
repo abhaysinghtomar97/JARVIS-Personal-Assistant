@@ -1,12 +1,20 @@
 import speech_recognition as sr  
 import webbrowser
 import pyttsx3 
-import musicLibrary
+import api.musicLibrary as musicLibrary
 import requests
 from openai import OpenAI
 from gtts import gTTS
 import pygame
 import os
+from http.server import BaseHTTPRequestHandler #for vercel deploy.
+
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Hello from my Python app on Vercel!")
 
 # pip install pocketsphinx
 

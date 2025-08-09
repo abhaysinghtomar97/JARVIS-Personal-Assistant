@@ -1,132 +1,208 @@
-import speech_recognition as sr  
+import os
+import tempfile
+import time
 import webbrowser
-import pyttsx3 
-import musicLibrary as musicLibrary
 import requests
-from openai import OpenAI
+import speech_recognition as sr
+import pyttsx3
 from gtts import gTTS
 import pygame
-import os
-from http.server import BaseHTTPRequestHandler #for vercel deploy.
+from openai import OpenAI  # keep but use env var for key
+import musicLibrary as musicLibrary
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b"Hello from my Python app on Vercel!")
-
-# pip install pocketsphinx
-
-recogniser = sr.Recognizer()
-engine  = pyttsx3.init()
-newsapi ="9f90c6300d7a4cb79ea3cfe96fbed950"
-
-# Initialize pygame mixer ONCE at the start
+# Initialize once
 pygame.mixer.init()
+engine = pyttsx3.init()   # fallback TTS engine
+recogniser = sr.Recognizer()
 
-# Old pyttsx3 speak function
-def speak_old(text):
-    engine.say(text)
-    engine.runAndWait()
+# --- TTS function using gTTS + pygame with tempfile ---
+def speak(text, use_gtts=True):
+    """Speak text. Try gTTS+pygame, fall back to pyttsx3 if gtts or pygame fails."""
+    if not text:
+        return
 
-# New gTTS + pygame speak function
-def speak(text):
-    # Save temp file to current working directory
-    temp_path = os.path.join(os.getcwd(), "temp.mp3")
-    tts = gTTS(text)
-    tts.save(temp_path)
+    if use_gtts:
+        # create unique temp file
+        tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        tmp_path = tmpf.name
+        tmpf.close()
+        try:
+            tts = gTTS(text)
+            tts.save(tmp_path)
 
-    try:
-        # Load the MP3 file
-        pygame.mixer.music.load(temp_path) 
-        # Play the music
-        pygame.mixer.music.play()
-        # Keep the program running until music finishes
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(10)
-    except pygame.error as e:
-        print(f"Pygame error: {e}")
-    finally:
-       pygame.mixer.music.stop()     # stop playback
-       pygame.mixer.quit()           # release the file handle
-       pygame.mixer.init()           # reinit for next play
-       if os.path.exists(temp_path):
-           os.remove(temp_path)
+            # load & play
+            pygame.mixer.music.load(tmp_path)
+            pygame.mixer.music.play()
 
+            # wait until playback ends
+            while pygame.mixer.music.get_busy():
+                pygame.time.Clock().tick(30)
+
+        except Exception as e:
+            print("gTTS/pygame failed:", e)
+            # fallback to pyttsx3
+            try:
+                engine.say(text)
+                engine.runAndWait()
+            except Exception as e2:
+                print("pyttsx3 also failed:", e2)
+        finally:
+            # make sure to stop playback before deleting file
+            try:
+                if pygame.mixer.music.get_busy():
+                    pygame.mixer.music.stop()
+            except Exception:
+                pass
+
+            # small delay to ensure file handle released on Windows
+            time.sleep(0.05)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception as e:
+                print("Could not remove temp file:", e)
+
+    else:
+        # direct pyttsx3 fallback
+        try:
+            engine.say(text)
+            engine.runAndWait()
+        except Exception as e:
+            print("pyttsx3 failed:", e)
+
+
+# --- OpenAI helper (use env var for safety) ---
 def aiprocess(command):
-    client = OpenAI(
-        api_key="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"
-    )
+    api_key = os.getenv("OPENAI_API_KEY", "YOUR_KEY_HERE")
+    client = OpenAI(api_key=api_key)
     completion = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[
-            {"role": "system", "content": "You are a virtual assistant named Jarvis assistant, skilled in general task like Alexa and Google Cloud. Give short responses"},
+            {"role": "system", "content": "You are Jarvis, a concise assistant. Keep responses short."},
             {"role": "user", "content": command}
-        ]
+        ],
+        max_tokens=150
     )
     return completion.choices[0].message.content
 
+
+# --- Command processing ---
 def processCommand(c):
-    if "open google" in c.lower():
+    c_lower = c.lower().strip()
+    if "open google" in c_lower:
         webbrowser.open("https://google.com")
-    
-    elif "open facebook" in c.lower():
+
+    elif "open facebook" in c_lower:
         webbrowser.open("https://facebook.com")
-    
-    elif "open instagram" in c.lower():
+
+    elif "open instagram" in c_lower:
         webbrowser.open("https://instagram.com")
-    
-    elif "open youtube" in c.lower():
+
+    elif "open youtube" in c_lower:
         webbrowser.open("https://youtube.com")
-    
-    elif "open github" in c.lower():
+
+    elif "open github" in c_lower:
         webbrowser.open("https://github.com")
 
-    elif c.lower().startswith("play"):
-        song = c.lower().split(" ")[1]
-        link = musicLibrary.music[song]
-        webbrowser.open(link)
+    elif c_lower.startswith("play "):
+        # support multi-word song names
+        song = c_lower.split(" ", 1)[1]
+        link = musicLibrary.music.get(song)
+        if link:
+            webbrowser.open(link)
+            speak(f"Playing {song}")
+        else:
+            speak("Song not found in library")
 
-    elif c.lower().startswith("khabar"):
-        r = requests.get("https://newsapi.org/v2/top-headlines?country=us&apiKey=9f90c6300d7a4cb79ea3cfe96fbed950")
-        if r.status_code == 200:
-            # Parse the JSON response
-            data = r.json()
+    elif c_lower.startswith("khabar"):
+    # put your key here or set NEWSAPI_KEY in env (safer)
+        api_key ="9f90c6300d7a4cb79ea3cfe96fbed950"
 
-            # Extract the headlines
-            articles = data.get('articles', [])
+        if not api_key:
+            speak("News API key not set.")
+            return
 
-            # Speaking headlines
-            for article in articles:
-                speak(article['title'])
+        try:
+            resp = requests.get(
+                "https://newsapi.org/v2/top-headlines?country=us&apiKey=9f90c6300d7a4cb79ea3cfe96fbed950",
+                params={"country": "us", "apiKey": api_key},
+                timeout=6
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            articles = data.get("articles", [])[:3]   # top 3 titles
+
+            if not articles:
+                speak("No news found.")
+                return
+
+            for art in articles:
+                title = art.get("title")
+                if title:
+                    print("Headline:", title)
+                    speak(title)
+
+        except Exception as e:
+            print("News error:", e)
+            speak("Could not fetch news right now.")
+
 
     else:
-        # Let OpenAI handle the request
         output = aiprocess(c)
         speak(output)
 
-if __name__ == "__main__":
-    speak("Initialising JARVIS.....")
-    while True:
-        # Obtain audio from the microphone
-        r = sr.Recognizer()
 
+# --- Main listening loop with better error handling & ambient noise calibration ---
+if __name__ == "__main__":
+    speak("Initialising JARVIS. Ready.", use_gtts=True)
+
+    # calibrate ambient noise once
+    with sr.Microphone() as source:
+        recogniser.adjust_for_ambient_noise(source, duration=1)
+        print("Calibrated ambient noise")
+
+    while True:
         try:
             with sr.Microphone() as source:
-                print("Listening...")
-                audio = r.listen(source, timeout=2)
+                print("Listening for wake word...")
+                # increase timeout if needed; catches sr.WaitTimeoutError
+                audio = recogniser.listen(source, timeout=5, phrase_time_limit=4)
 
-            word = r.recognize_google(audio)
+            try:
+                phrase = recogniser.recognize_google(audio)
+                print("Heard:", phrase)
+            except sr.UnknownValueError:
+                continue
+            except sr.RequestError as e:
+                print("Speech API request error:", e)
+                speak("Speech recognition service is unavailable", use_gtts=False)
+                continue
 
-            if "jarvis" in word.lower():
-                speak("Yes Sir")
-                # Listen for command
+            if "jarvis" in phrase.lower():
+                speak("Yes sir", use_gtts=True)
+                # listen for command after wake word
                 with sr.Microphone() as source:
-                    print("Jarvis Active...")
-                    audio = r.listen(source)
-                    command = r.recognize_google(audio)
+                    print("Listening for command...")
+                    recogniser.adjust_for_ambient_noise(source, duration=0.5)
+                    audio_cmd = recogniser.listen(source, timeout=6, phrase_time_limit=8)
+                try:
+                    command = recogniser.recognize_google(audio_cmd)
+                    print("Command:", command)
                     processCommand(command)
+                except sr.UnknownValueError:
+                    speak("Sorry, I didn't catch that. Please try again.", use_gtts=False)
+                except sr.RequestError as e:
+                    print("RequestError:", e)
+                    speak("Network problem with speech recognition", use_gtts=False)
 
+        except sr.WaitTimeoutError:
+            # no wake word detected before timeout - loop again
+            continue
+        except KeyboardInterrupt:
+            print("Exiting...")
+            break
         except Exception as e:
-            print("Error; {0}".format(e))
+            print("Unexpected error:", e)
+            # don't crash the loop; optionally speak minimal error
+            # speak("An error occurred", use_gtts=False)
+            continue
